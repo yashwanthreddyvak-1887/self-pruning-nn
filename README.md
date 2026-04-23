@@ -1,24 +1,29 @@
 # Self-Pruning Neural Network (Simplified)
 
-This project demonstrates a simplified version of a self-pruning neural network.
+# Self-Pruning Neural Network (PyTorch)
 
-## Idea
-Each weight is multiplied by a gate (sigmoid function).  
+## Objective
+Build a neural network that learns to prune its own weights during training.
+
+## Key Idea
+Each weight is multiplied by a learnable gate (sigmoid).  
 If the gate approaches zero, the weight is effectively removed.
 
 ## Loss Function
-Total Loss = Classification Loss + λ * Sparsity Loss
+Total Loss = CrossEntropy + λ * L1(gates)
 
-- Classification Loss: Binary Cross Entropy
-- Sparsity Loss: Sum of gate values (L1-like)
+- CrossEntropy: classification accuracy
+- L1(gates): encourages sparsity
 
 ## Results
-- Accuracy: ~60-70% (synthetic data)
-- Sparsity: Shows pruning behavior
+- Accuracy: Moderate (due to short training)
+- Sparsity: Significant pruning observed
 
 ## Observations
-- Higher lambda increases pruning
-- Lower lambda improves accuracy
+- Higher λ → more pruning
+- Lower λ → better accuracy
 
-## Note
-This is a simplified prototype demonstrating the concept without heavy frameworks like PyTorch, focusing on core logic.
+## Tech Used
+- PyTorch
+- CIFAR-10 dataset
+- Matplotlib
