@@ -1,5 +1,3 @@
-# Self-Pruning Neural Network (Simplified)
-
 # Self-Pruning Neural Network (PyTorch)
 
 ## Objective
