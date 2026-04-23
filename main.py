@@ -1,87 +1,126 @@
-import random
-import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 
-# ---------------- SIMPLE DATA ----------------
-# Fake dataset (since no PyTorch)
-X = np.random.rand(500, 5)
-y = (np.sum(X, axis=1) > 2.5).astype(int)
+# ---------------- DATA ----------------
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
+
+trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=64, shuffle=True)
+
+testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+testloader = torch.utils.data.DataLoader(testset, batch_size=64, shuffle=False)
+
+# ---------------- PRUNABLE LAYER ----------------
+class PrunableLinear(nn.Module):
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(out_features, in_features) * 0.01)
+        self.bias = nn.Parameter(torch.zeros(out_features))
+        self.gate_scores = nn.Parameter(torch.randn(out_features, in_features))
+
+    def forward(self, x):
+        gates = torch.sigmoid(self.gate_scores)
+        pruned_weights = self.weight * gates
+        return torch.matmul(x, pruned_weights.t()) + self.bias
 
 # ---------------- MODEL ----------------
-class PrunableLayer:
-    def __init__(self, in_f, out_f):
-        self.weight = np.random.randn(in_f, out_f)
-        self.bias = np.zeros(out_f)
-        self.gate_scores = np.random.randn(in_f, out_f)
-
-    def forward(self, x):
-        gates = 1 / (1 + np.exp(-self.gate_scores))  # sigmoid
-        pruned_weights = self.weight * gates
-        return np.dot(x, pruned_weights) + self.bias, gates
-
-# ---------------- NETWORK ----------------
-class Net:
+class Net(nn.Module):
     def __init__(self):
-        self.layer1 = PrunableLayer(5, 4)
-        self.layer2 = PrunableLayer(4, 1)
+        super().__init__()
+        self.fc1 = PrunableLinear(32*32*3, 256)
+        self.fc2 = PrunableLinear(256, 128)
+        self.fc3 = PrunableLinear(128, 10)
 
     def forward(self, x):
-        out1, g1 = self.layer1.forward(x)
-        out1 = np.maximum(0, out1)  # ReLU
-        out2, g2 = self.layer2.forward(out1)
-        return out2, [g1, g2]
+        x = x.view(x.size(0), -1)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
 
-# ---------------- LOSS ----------------
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-def compute_loss(pred, target, gates, lambda_sparse=0.01):
-    pred = sigmoid(pred).reshape(-1)
-    ce_loss = -np.mean(target*np.log(pred+1e-8) + (1-target)*np.log(1-pred+1e-8))
-
-    sparsity = sum(np.sum(g) for g in gates)
-    return ce_loss + lambda_sparse * sparsity
+# ---------------- SPARSITY LOSS ----------------
+def sparsity_loss(model):
+    loss = 0
+    for module in model.modules():
+        if hasattr(module, "gate_scores"):
+            gates = torch.sigmoid(module.gate_scores)
+            loss += torch.sum(gates)
+    return loss
 
 # ---------------- TRAIN ----------------
-model = Net()
-lr = 0.01
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-for epoch in range(50):
-    pred, gates = model.forward(X)
-    loss = compute_loss(pred, y, gates)
+model = Net().to(device)
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+criterion = nn.CrossEntropyLoss()
 
-    # fake gradient update (simple simulation)
-    for layer in [model.layer1, model.layer2]:
-        layer.weight -= lr * np.random.randn(*layer.weight.shape)
-        layer.gate_scores -= lr * np.random.randn(*layer.gate_scores.shape)
+lambda_sparse = 0.001
 
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch}, Loss: {loss:.4f}")
+for epoch in range(3):  # keep small for fast run
+    total_loss = 0
+    model.train()
+
+    for images, labels in trainloader:
+        images, labels = images.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+
+        outputs = model(images)
+        ce_loss = criterion(outputs, labels)
+        sp_loss = sparsity_loss(model)
+
+        loss = ce_loss + lambda_sparse * sp_loss
+
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+    print(f"Epoch {epoch+1}, Loss: {total_loss:.2f}")
 
 # ---------------- EVALUATION ----------------
-pred, gates = model.forward(X)
-pred = sigmoid(pred).reshape(-1)
-pred_labels = (pred > 0.5).astype(int)
+model.eval()
+correct = 0
+total = 0
 
-accuracy = np.mean(pred_labels == y) * 100
+with torch.no_grad():
+    for images, labels in testloader:
+        images, labels = images.to(device), labels.to(device)
+
+        outputs = model(images)
+        _, predicted = torch.max(outputs, 1)
+
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+accuracy = 100 * correct / total
 print("Accuracy:", accuracy)
 
 # ---------------- SPARSITY ----------------
 total = 0
 pruned = 0
+all_gates = []
 
-for g in gates:
-    total += g.size
-    pruned += np.sum(g < 0.1)
+for module in model.modules():
+    if hasattr(module, "gate_scores"):
+        gates = torch.sigmoid(module.gate_scores).detach().cpu()
+        total += gates.numel()
+        pruned += (gates < 1e-2).sum().item()
+        all_gates.extend(gates.numpy().flatten())
 
 sparsity = (pruned / total) * 100
 print("Sparsity:", sparsity)
 
 # ---------------- PLOT ----------------
-all_gates = np.concatenate([g.flatten() for g in gates])
-
-plt.hist(all_gates, bins=30)
-plt.title("Gate Distribution")
+plt.hist(all_gates, bins=50)
+plt.title("Gate Value Distribution")
 plt.savefig("plot.png")
 
-print("Done. Plot saved as plot.png")
+print("Plot saved as plot.png")
